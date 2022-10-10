@@ -52,7 +52,7 @@ def test3():
 
     ctx = webrtc_streamer(key="example", 
         mode=WebRtcMode.SENDRECV,
-        # rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
         video_frame_callback=video_frame_callback)
 
     if show_hist:
@@ -77,6 +77,6 @@ if __name__=="__main__":
     st.write("Hello,")
 
     # test1()
-    test2()
-    # test3()
+    # test2()
+    test3()
 
