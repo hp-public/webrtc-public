@@ -12,11 +12,7 @@ import cv2
 
 # webrtc_streamer(key="sample")
 
-# st.markdown(
-#     "This demo is based on "
-#     "https://github.com/aiortc/aiortc/blob/2362e6d1f0c730a0f8c387bbea76546775ad2fe8/examples/server/server.py#L34. "  # noqa: E501
-#     "Many thanks to the project."
-# )
+
 
 def test1():
     st.write("Running Test1")
@@ -77,16 +73,10 @@ def test3():
 
 if __name__=="__main__":
 
-    st.title("My first Streamlit app")
-    st.write("Hello, world2")
+    st.title("webrtc opencv ")
+    st.write("Hello,")
 
     # test1()
-    # test2()
-    test3()
+    test2()
+    # test3()
 
-
-    st.markdown(
-    "This demo is based on "
-    "https://github.com/aiortc/aiortc/blob/2362e6d1f0c730a0f8c387bbea76546775ad2fe8/examples/server/server.py#L34. "  # noqa: E501
-    "Many thanks to the project."
-)
