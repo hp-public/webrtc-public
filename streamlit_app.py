@@ -53,7 +53,9 @@ def test3():
     ctx = webrtc_streamer(key="example", 
         mode=WebRtcMode.SENDRECV,
         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        video_frame_callback=video_frame_callback)
+        video_frame_callback=video_frame_callback,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,)
 
     if show_hist:
         fig_place = st.empty()
