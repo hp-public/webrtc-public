@@ -1,84 +1,235 @@
-import threading
-import streamlit as st
-from streamlit_webrtc import WebRtcMode
-from streamlit_webrtc import webrtc_streamer
-from matplotlib import pyplot as plt
+"""Object detection demo with MobileNet SSD.
+This model and code are based on
+https://github.com/robmarkcole/object-detection-app
+"""
+
+import logging
+import queue
+from pathlib import Path
+from typing import List, NamedTuple
+
 import av
 import cv2
+import numpy as np
+import streamlit as st
+from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
-# st.title("My first Streamlit app")
-# st.write("Hello, world2")
+from sample_utils.download import download_file
 
+HERE = Path(__file__).parent
+ROOT = HERE.parent
 
-# webrtc_streamer(key="sample")
-
-
-
-def test1():
-    st.write("Running Test1")
-    webrtc_streamer(key="sample")
-
-def test2():
-    st.write("Running Test2")
+logger = logging.getLogger(__name__)
 
 
-    flip = st.checkbox("Flip")
-    def video_frame_callback(frame):
-        img = frame.to_ndarray(format="bgr24")
+MODEL_URL = "https://github.com/robmarkcole/object-detection-app/raw/master/model/MobileNetSSD_deploy.caffemodel"  # noqa: E501
+MODEL_LOCAL_PATH = ROOT / "./models/MobileNetSSD_deploy.caffemodel"
+PROTOTXT_URL = "https://github.com/robmarkcole/object-detection-app/raw/master/model/MobileNetSSD_deploy.prototxt.txt"  # noqa: E501
+PROTOTXT_LOCAL_PATH = ROOT / "./models/MobileNetSSD_deploy.prototxt.txt"
 
-        flipped = img[::-1,:,:] if flip else img
+CLASSES = [
+    "background",
+    "aeroplane",
+    "bicycle",
+    "bird",
+    "boat",
+    "bottle",
+    "bus",
+    "car",
+    "cat",
+    "chair",
+    "cow",
+    "diningtable",
+    "dog",
+    "horse",
+    "motorbike",
+    "person",
+    "pottedplant",
+    "sheep",
+    "sofa",
+    "train",
+    "tvmonitor",
+]
 
-        return av.VideoFrame.from_ndarray(flipped, format="bgr24")
 
-    webrtc_streamer(key="example", video_frame_callback=video_frame_callback)
-
-
-def test3():
-    st.write("Running Test3")
-
-    show_hist = st.checkbox("Show Histogram")
-    
-    lock = threading.Lock()
-    img_container = {"img": None}
-
-    def video_frame_callback(frame):
-        img = frame.to_ndarray(format="bgr24")
-        with lock:
-            img_container["img"] = img
-            # print(img.__dir__,img_container["img"].__dir__)
-
-        return frame
+@st.experimental_singleton  # type: ignore # See https://github.com/python/mypy/issues/7781, https://github.com/python/mypy/issues/12566  # noqa: E501
+def generate_label_colors():
+    return np.random.uniform(0, 255, size=(len(CLASSES), 3))
 
 
-    ctx = webrtc_streamer(key="example", 
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-        video_frame_callback=video_frame_callback,
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,)
+COLORS = generate_label_colors()
 
-    if show_hist:
-        fig_place = st.empty()
-        fig, ax = plt.subplots(1, 1)
+download_file(MODEL_URL, MODEL_LOCAL_PATH, expected_size=23147564)
+download_file(PROTOTXT_URL, PROTOTXT_LOCAL_PATH, expected_size=29353)
 
-        while ctx.state.playing:
-            with lock:
-                img = img_container["img"]
-            if img is None:
-                continue
-            # print(len(img),len(img[0]))
-            # print(img.__dir__,img_container["img"].__dir__)
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            ax.cla()
-            ax.hist(gray.ravel(), 256, [0, 256])
-            fig_place.pyplot(fig)
+DEFAULT_CONFIDENCE_THRESHOLD = 0.5
+
+
+class Detection(NamedTuple):
+    name: str
+    prob: float
+
+
+# Session-specific caching
+cache_key = "object_detection_dnn"
+if cache_key in st.session_state:
+    net = st.session_state[cache_key]
+else:
+    net = cv2.dnn.readNetFromCaffe(str(PROTOTXT_LOCAL_PATH), str(MODEL_LOCAL_PATH))
+    st.session_state[cache_key] = net
+
+
+
+
+
+
+def _annotate_image(image, detections,confidence_threshold=0.5):
+    # loop over the detections
+    (h, w) = image.shape[:2]
+    result: List[Detection] = []
+    for i in np.arange(0, detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+
+        if confidence > confidence_threshold:
+            # extract the index of the class label from the `detections`,
+            # then compute the (x, y)-coordinates of the bounding box for
+            # the object
+            idx = int(detections[0, 0, i, 1])
+            box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
+            (startX, startY, endX, endY) = box.astype("int")
+
+            name = CLASSES[idx]
+            result.append(Detection(name=name, prob=float(confidence)))
+
+            # display the prediction
+            label = f"{name}: {round(confidence * 100, 2)}%"
+            cv2.rectangle(image, (startX, startY), (endX, endY), COLORS[idx], 2)
+            y = startY - 15 if startY - 15 > 15 else startY + 15
+            cv2.putText(
+                image,
+                label,
+                (startX, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                COLORS[idx],
+                2,
+            )
+    return image, result
+
+
+result_queue: queue.Queue = (
+    queue.Queue()
+)  # TODO: A general-purpose shared state object may be more useful.
+
+
+
+def live_cam():
+    st.write(result_queue,result_queue.__class__)
+
+    st.write("classes:")
+    st.write(np.array(CLASSES).reshape(3,-1))
+
+    streaming_placeholder = st.empty()
+    confidence_threshold = st.slider(
+    "Confidence threshold", 0.0, 1.0, DEFAULT_CONFIDENCE_THRESHOLD, 0.05
+)
+
+
+    def callback(frame: av.VideoFrame) -> av.VideoFrame:
+        image = frame.to_ndarray(format="bgr24")
+        blob = cv2.dnn.blobFromImage(
+            cv2.resize(image, (300, 300)), 0.007843, (300, 300), 127.5
+        )
+        net.setInput(blob)
+        detections = net.forward()
+        annotated_image, result = _annotate_image(image, detections)
+
+        # NOTE: This `recv` method is called in another thread,
+        # so it must be thread-safe.
+        result_queue.put(result)  # TODO:
+
+        return av.VideoFrame.from_ndarray(annotated_image, format="bgr24")
+
+    with streaming_placeholder.container():
+        webrtc_ctx = webrtc_streamer(
+            key="object-detection",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+            video_frame_callback=callback,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+
+    if st.checkbox("Show the detected labels", value=True):
+        if webrtc_ctx.state.playing:
+            labels_placeholder = st.empty()
+            # NOTE: The video transformation with object detection and
+            # this loop displaying the result labels are running
+            # in different threads asynchronously.
+            # Then the rendered video frames and the labels displayed here
+            # are not strictly synchronized.
+            while True:
+                try:
+                    result = result_queue.get(timeout=1.0)
+                except queue.Empty:
+                    result = None
+                labels_placeholder.table(result)
+
+def load_image():
+    pass
+
+def live_cam_captured_photo():
+    img_file_buffer = st.camera_input("Take a picture")
+
+    confidence_threshold = st.slider(
+    "Confidence threshold", 0.0, 1.0, DEFAULT_CONFIDENCE_THRESHOLD, 0.05
+)
+    def run_dnn(image: np.ndarray):
+        # image = frame.to_ndarray(format="bgr24")
+        blob = cv2.dnn.blobFromImage(
+            cv2.resize(image, (300, 300)), 0.007843, (300, 300), 127.5
+        )
+        net.setInput(blob)
+        detections = net.forward()
+        annotated_image, result = _annotate_image(image, detections,confidence_threshold)
+
+        annotated_image = cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB)
+        return annotated_image, result
+
+    if img_file_buffer is not None:
+        # To read image file buffer with OpenCV:
+        bytes_data = img_file_buffer.getvalue()
+        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+
+        # Check the type of cv2_img:
+        # Should output: <class 'numpy.ndarray'>
+        st.write(type(cv2_img))
+
+        # Check the shape of cv2_img:
+        # Should output shape: (height, width, channels)
+        st.write(cv2_img.shape)
+
+
+        annotated_image, result = run_dnn(cv2_img)
+
+        st.image(annotated_image, caption='Sunrise by the mountains')
 
 if __name__=="__main__":
 
-    st.title("webrtc opencv ")
-    st.write("Hello,")
+    st.title("Object Detection")
 
-    # test1()
-    # test2()
-    test3()
+    selection = st.radio(
+    "Select a mode to run",
+    ('streaming cam', 'captured photo', 'uploaded photo','upload video'))
 
+if selection == 'streaming cam':
+    st.write('You selected streaming cam.')
+    live_cam()
+elif selection == 'captured photo':
+    st.write("Pleas press 'Take Photo' " )
+    live_cam_captured_photo()
+else:
+    st.write("error")
+
+
+   
